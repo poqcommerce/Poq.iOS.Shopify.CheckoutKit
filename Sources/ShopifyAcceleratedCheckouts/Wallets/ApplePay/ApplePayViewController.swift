@@ -35,7 +35,7 @@ protocol PayController: AnyObject {
 }
 
 @available(iOS 16.0, *)
-class ApplePayViewController: WalletController, PayController {
+public class ApplePayViewController: WalletController, PayController {
     @Published var paymentController: PKPaymentAuthorizationController?
 
     var cart: StorefrontAPI.Types.Cart?
@@ -127,30 +127,42 @@ class ApplePayViewController: WalletController, PayController {
         __authorizationDelegate
     }
 
-    init(
+    @MainActor
+    public init(
         identifier: CheckoutIdentifier,
-        configuration: ApplePayConfigurationWrapper
+        configuration: ShopifyAcceleratedCheckouts.Configuration,
+        eventHandlers: EventHandlers,
     ) {
         super.init(
             identifier: identifier,
             storefront: StorefrontAPI(
-                storefrontDomain: configuration.common.storefrontDomain,
-                storefrontAccessToken: configuration.common.storefrontAccessToken
+                storefrontDomain: configuration.storefrontDomain,
+                storefrontAccessToken: configuration.storefrontAccessToken
             ),
-            configuration: configuration.common
+            configuration: configuration
         )
         __authorizationDelegate = ApplePayAuthorizationDelegate(
             configuration: configuration,
             controller: self
         )
+        onCheckoutComplete = eventHandlers.checkoutDidComplete
+        onCheckoutFail = eventHandlers.checkoutDidFail
+        onCheckoutCancel = eventHandlers.checkoutDidCancel
+        onShouldRecoverFromError = eventHandlers.shouldRecoverFromError
+        onCheckoutClickLink = eventHandlers.checkoutDidClickLink
+        onCheckoutWebPixelEvent = eventHandlers.checkoutDidEmitWebPixelEvent
     }
 
-    func onPress() async {
+    @MainActor
+    public func onPress() async {
         do {
-            let cart = try await createOrfetchCart()
-
-            self.cart = cart
-
+            try await configuration.loadShopSettings()
+        } catch {
+            checkoutDidFail(error: .sdkError(underlying: error, recoverable: false))
+        }
+        
+        do {
+            self.cart = try await createOrfetchCart()
             return try await authorizationDelegate.transition(to: .startPaymentRequest)
         } catch {
             ShopifyAcceleratedCheckouts.logger.error(
@@ -218,40 +230,41 @@ class ApplePayViewController: WalletController, PayController {
 }
 
 @available(iOS 16.0, *)
-extension ApplePayViewController: CheckoutDelegate {
-    func checkoutDidComplete(event: CheckoutCompletedEvent) {
+extension ApplePayViewController: @preconcurrency CheckoutDelegate {
+    public func checkoutDidComplete(event: CheckoutCompletedEvent) {
         Task { @MainActor in
             self.onCheckoutComplete?(event)
-            try await authorizationDelegate.transition(to: .completed)
+            try? await authorizationDelegate.transition(to: .completed)
         }
     }
 
-    func checkoutDidFail(error: CheckoutError) {
+    public func checkoutDidFail(error: CheckoutError) {
         Task { @MainActor in
             self.onCheckoutFail?(error)
         }
     }
 
-    func checkoutDidCancel() {
+    public func checkoutDidCancel() {
         Task { @MainActor in
             // x right button on CSK doesn't dismiss automatically
             checkoutViewController?.dismiss(animated: true)
             self.onCheckoutCancel?()
-            try await authorizationDelegate.transition(to: .completed)
+            try? await authorizationDelegate.transition(to: .completed)
         }
     }
 
-    @MainActor func shouldRecoverFromError(error: CheckoutError) -> Bool {
+    @MainActor
+    public func shouldRecoverFromError(error: CheckoutError) -> Bool {
         return onShouldRecoverFromError?(error) ?? error.isRecoverable
     }
 
-    func checkoutDidClickLink(url: URL) {
+    public func checkoutDidClickLink(url: URL) {
         Task { @MainActor in
             self.onCheckoutClickLink?(url)
         }
     }
 
-    func checkoutDidEmitWebPixelEvent(event: PixelEvent) {
+    public func checkoutDidEmitWebPixelEvent(event: PixelEvent) {
         Task { @MainActor in
             self.onCheckoutWebPixelEvent?(event)
         }
