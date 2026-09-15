@@ -115,6 +115,11 @@ class ApplePayAuthorizationDelegate: NSObject, ObservableObject {
         let presented = await paymentController.present()
 
         try await transition(to: presented ? .appleSheetPresented : .reset)
+        if !presented {
+            throw ShopifyAcceleratedCheckouts.Error.configuration(
+                missing: "ApplePay - check terminal for errors"
+            )
+        }
     }
 
     func transition(to nextState: ApplePayState) async throws {
